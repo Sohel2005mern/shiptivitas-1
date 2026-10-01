@@ -3,72 +3,113 @@ import ReactDOM from 'react-dom';
 import App from './App';
 import Board from './Board';
 
-it('renders without crashing', () => {
+const mockClients = [
+  { id: 1, name: 'Client 1', description: 'Desc 1', status: 'in-progress', priority: 1 },
+  { id: 2, name: 'Client 2', description: 'Desc 2', status: 'complete', priority: 1 },
+  { id: 3, name: 'Client 3', description: 'Desc 3', status: 'backlog', priority: 1 },
+  { id: 4, name: 'Client 4', description: 'Desc 4', status: 'in-progress', priority: 2 },
+  { id: 6, name: 'Client 6', description: 'Desc 6', status: 'backlog', priority: 2 },
+];
+
+beforeEach(() => {
+  global.fetch = jest.fn((url, options) => {
+    if (!options || !options.method || options.method === 'GET') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(mockClients),
+      });
+    }
+    if (options.method === 'PUT') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(mockClients),
+      });
+    }
+    return Promise.reject(new Error('Unknown request'));
+  });
+});
+
+afterEach(() => {
+  if (global.fetch && global.fetch.mockClear) {
+    global.fetch.mockClear();
+  }
+});
+
+it('renders App without crashing', () => {
   const div = document.createElement('div');
   ReactDOM.render(<App />, div);
   ReactDOM.unmountComponentAtNode(div);
 });
 
-it('renders Shipping Requests board with 3 swimlanes', () => {
+it('fetches clients from API on mount and renders 3 swimlanes in priority order', async () => {
   const div = document.createElement('div');
-  ReactDOM.render(<Board />, div);
+  let board;
+  ReactDOM.render(<Board ref={inst => { board = inst; }} />, div);
 
+  // Wait for fetch promise to resolve
+  await board.fetchClients();
+
+  // Force synchronous update
   const columns = div.querySelectorAll('.Swimlane-column');
   expect(columns.length).toBe(3);
 
   const titles = Array.from(div.querySelectorAll('.Swimlane-title')).map(el => el.textContent);
   expect(titles).toEqual(['Backlog', 'In Progress', 'Complete']);
 
+  const backlogCards = div.querySelectorAll('.col-md-4:nth-child(1) .Card');
+  const inProgressCards = div.querySelectorAll('.col-md-4:nth-child(2) .Card');
+  const completeCards = div.querySelectorAll('.col-md-4:nth-child(3) .Card');
+
+  expect(backlogCards.length).toBe(2);
+  expect(inProgressCards.length).toBe(2);
+  expect(completeCards.length).toBe(1);
+
+  expect(backlogCards[0].textContent).toBe('Client 3');
+  expect(backlogCards[1].textContent).toBe('Client 6');
+
   ReactDOM.unmountComponentAtNode(div);
 });
 
-it('initially places all 20 cards in the Backlog swimlane with grey color', () => {
+it('sends PUT request with correct status and 1-based priority on card drop', async () => {
   const div = document.createElement('div');
-  ReactDOM.render(<Board />, div);
+  let board;
+  ReactDOM.render(<Board ref={inst => { board = inst; }} />, div);
+  await board.fetchClients();
 
-  const dragColumns = div.querySelectorAll('.Swimlane-dragColumn');
-  const backlogCards = dragColumns[0].querySelectorAll('.Card');
-  const inProgressCards = dragColumns[1].querySelectorAll('.Card');
-  const completeCards = dragColumns[2].querySelectorAll('.Card');
+  const cardElement = div.querySelector('.Card'); // Client 3
+  const inProgressLane = board.swimlanes.inProgress.current;
 
-  expect(backlogCards.length).toBe(20);
-  expect(inProgressCards.length).toBe(0);
-  expect(completeCards.length).toBe(0);
+  // Simulate dropping cardElement into inProgressLane
+  inProgressLane.appendChild(cardElement);
 
-  backlogCards.forEach(card => {
-    expect(card.classList.contains('Card-grey')).toBe(true);
-    expect(card.getAttribute('data-status')).toBe('backlog');
-  });
+  await board.handleDrop(cardElement, inProgressLane, board.swimlanes.backlog.current, null);
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    'http://localhost:3001/api/v1/clients/3',
+    expect.objectContaining({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'in-progress', priority: inProgressLane.querySelectorAll('.Card').length }),
+    })
+  );
 
   ReactDOM.unmountComponentAtNode(div);
 });
 
-it('updates card status and colors correctly when moved between swimlanes', () => {
+it('handles API error gracefully and displays error state', async () => {
+  global.fetch = jest.fn(() => Promise.reject(new Error('Network error')));
+
   const div = document.createElement('div');
-  let boardInstance;
-  ReactDOM.render(<Board ref={inst => { boardInstance = inst; }} />, div);
+  let board;
+  ReactDOM.render(<Board ref={inst => { board = inst; }} />, div);
 
-  const cardElement = div.querySelector('.Card');
-  expect(cardElement.classList.contains('Card-grey')).toBe(true);
+  await board.fetchClients();
 
-  // Move to inProgress
-  boardInstance.updateCardStatus(cardElement, boardInstance.swimlanes.inProgress.current);
-  expect(cardElement.classList.contains('Card-blue')).toBe(true);
-  expect(cardElement.classList.contains('Card-grey')).toBe(false);
-  expect(cardElement.getAttribute('data-status')).toBe('in-progress');
-
-  // Move to complete
-  boardInstance.updateCardStatus(cardElement, boardInstance.swimlanes.complete.current);
-  expect(cardElement.classList.contains('Card-green')).toBe(true);
-  expect(cardElement.classList.contains('Card-blue')).toBe(false);
-  expect(cardElement.getAttribute('data-status')).toBe('complete');
-
-  // Move back to backlog
-  boardInstance.updateCardStatus(cardElement, boardInstance.swimlanes.backlog.current);
-  expect(cardElement.classList.contains('Card-grey')).toBe(true);
-  expect(cardElement.classList.contains('Card-green')).toBe(false);
-  expect(cardElement.getAttribute('data-status')).toBe('backlog');
+  expect(div.textContent).toContain('Failed to load shipping requests from backend API.');
 
   ReactDOM.unmountComponentAtNode(div);
 });
+
 
